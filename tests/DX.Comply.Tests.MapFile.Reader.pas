@@ -68,8 +68,6 @@ type
     /// 40,000 distinct units must not take quadratic time. The old list scan
     /// needed about 90 seconds here. The test measures the CPU time of the
     /// thread, not wall-clock time, so a busy build machine does not fail it.
-    /// The bound is generous, because the per-line regex still costs a few
-    /// seconds.
     /// </summary>
     [Test]
     [Category('Performance')]
@@ -82,9 +80,12 @@ type
     procedure ReadUnitNames_LowerCaseHeader_ExtractsUnitName;
 
     /// <summary>
-    /// A large map file must be read without compiling a regex per line.
+    /// A large map file must be read without compiling a regex per line. The
+    /// test measures the CPU time of the thread, so a busy build machine does
+    /// not fail it.
     /// </summary>
     [Test]
+    [Category('Performance')]
     procedure ReadUnitNames_LargeMap_ReadsQuickly;
   end;
 
@@ -92,7 +93,6 @@ implementation
 
 uses
   Winapi.Windows,
-  System.Diagnostics,
   System.IOUtils,
   System.SysUtils;
 
@@ -351,9 +351,10 @@ const
   cMaxMilliseconds = 6000;
 var
   LBuilder: TStringBuilder;
+  LCpuMilliseconds: Int64;
+  LCpuStart: Int64;
   LLine: Integer;
   LMapFilePath: string;
-  LStopwatch: TStopwatch;
   LUnitNames: TArray<string>;
 begin
   LMapFilePath := TPath.GetTempFileName;
@@ -380,15 +381,15 @@ begin
       LBuilder.Free;
     end;
 
-    LStopwatch := TStopwatch.StartNew;
+    LCpuStart := ThreadCpuMilliseconds;
     LUnitNames := TMapFileReader.ReadUnitNames(LMapFilePath);
-    LStopwatch.Stop;
+    LCpuMilliseconds := ThreadCpuMilliseconds - LCpuStart;
 
     Assert.AreEqual(NativeInt(cLineCount div cLinesPerUnit), NativeInt(Length(LUnitNames)),
       'Every synthetic unit must be extracted');
-    Assert.IsTrue(LStopwatch.ElapsedMilliseconds < cMaxMilliseconds,
-      Format('Reading %d lines took %d ms, limit is %d ms',
-        [cLineCount, LStopwatch.ElapsedMilliseconds, cMaxMilliseconds]));
+    Assert.IsTrue(LCpuMilliseconds < cMaxMilliseconds,
+      Format('Reading %d lines took %d ms CPU time, limit is %d ms',
+        [cLineCount, LCpuMilliseconds, cMaxMilliseconds]));
   finally
     if TFile.Exists(LMapFilePath) then
     begin

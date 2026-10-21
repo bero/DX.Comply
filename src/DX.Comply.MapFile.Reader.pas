@@ -65,10 +65,11 @@ begin
 end;
 
 /// <summary>
-/// Tries to extract a unit name from a "Line numbers for" section header.
+/// Tries to extract a unit name with ARegEx, whose first group captures it.
 /// </summary>
-/// <param name="ARegEx">cLineNumbersPattern, compiled once by ReadUnitNames.</param>
-function TryExtractLineNumbersUnitName(const ARegEx: TRegEx; const ALine: string;
+/// <param name="ARegEx">cLineNumbersPattern or cSegmentPattern, compiled once by
+/// ReadUnitNames.</param>
+function TryExtractUnitName(const ARegEx: TRegEx; const ALine: string;
   out AUnitName: string): Boolean;
 var
   LMatch: TMatch;
@@ -76,24 +77,11 @@ begin
   AUnitName := '';
   LMatch := ARegEx.Match(ALine);
   Result := LMatch.Success;
-  if Result then
-    AUnitName := Trim(LMatch.Groups[1].Value);
-end;
 
-/// <summary>
-/// Tries to extract a unit name from a "Detailed map of segments" entry (M=UnitName).
-/// </summary>
-/// <param name="ARegEx">cSegmentPattern, compiled once by ReadUnitNames.</param>
-function TryExtractSegmentUnitName(const ARegEx: TRegEx; const ALine: string;
-  out AUnitName: string): Boolean;
-var
-  LMatch: TMatch;
-begin
-  AUnitName := '';
-  LMatch := ARegEx.Match(ALine);
-  Result := LMatch.Success;
   if Result then
+  begin
     AUnitName := Trim(LMatch.Groups[1].Value);
+  end;
 end;
 
 class function TMapFileReader.ReadUnitNames(const AMapFilePath: string): TArray<string>;
@@ -120,11 +108,8 @@ begin
     LLines.LoadFromFile(AMapFilePath);
     for LLine in LLines do
     begin
-      if TryExtractLineNumbersUnitName(LLineNumbersRegEx, LLine, LUnitName) then
-      begin
-        AddUniqueUnitName(LUnitName, LSeen, LUnitNames);
-      end
-      else if TryExtractSegmentUnitName(LSegmentRegEx, LLine, LUnitName) then
+      if TryExtractUnitName(LLineNumbersRegEx, LLine, LUnitName) or
+        TryExtractUnitName(LSegmentRegEx, LLine, LUnitName) then
       begin
         AddUniqueUnitName(LUnitName, LSeen, LUnitNames);
       end;
