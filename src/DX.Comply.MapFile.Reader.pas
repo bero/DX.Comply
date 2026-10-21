@@ -18,25 +18,11 @@ unit DX.Comply.MapFile.Reader;
 
 interface
 
-uses
-  System.RegularExpressions;
-
 type
   /// <summary>
   /// Reads unit names from a detailed Delphi map file.
   /// </summary>
   TMapFileReader = class
-  private
-    /// <summary>
-    /// Tries to extract a unit name from a "Line numbers for" section header.
-    /// </summary>
-    class function TryExtractLineNumbersUnitName(const ARegEx: TRegEx; const ALine: string;
-      out AUnitName: string): Boolean; static;
-    /// <summary>
-    /// Tries to extract a unit name from a "Detailed map of segments" entry (M=UnitName).
-    /// </summary>
-    class function TryExtractSegmentUnitName(const ARegEx: TRegEx; const ALine: string;
-      out AUnitName: string): Boolean; static;
   public
     /// <summary>
     /// Reads unique unit names from the specified detailed map file.
@@ -51,6 +37,7 @@ uses
   System.Generics.Collections,
   System.Generics.Defaults,
   System.IOUtils,
+  System.RegularExpressions,
   System.SysUtils;
 
 const
@@ -75,6 +62,38 @@ begin
 
   ASeen.Add(AUnitName, True);
   AUnitNames.Add(AUnitName);
+end;
+
+/// <summary>
+/// Tries to extract a unit name from a "Line numbers for" section header.
+/// </summary>
+/// <param name="ARegEx">cLineNumbersPattern, compiled once by ReadUnitNames.</param>
+function TryExtractLineNumbersUnitName(const ARegEx: TRegEx; const ALine: string;
+  out AUnitName: string): Boolean;
+var
+  LMatch: TMatch;
+begin
+  AUnitName := '';
+  LMatch := ARegEx.Match(ALine);
+  Result := LMatch.Success;
+  if Result then
+    AUnitName := Trim(LMatch.Groups[1].Value);
+end;
+
+/// <summary>
+/// Tries to extract a unit name from a "Detailed map of segments" entry (M=UnitName).
+/// </summary>
+/// <param name="ARegEx">cSegmentPattern, compiled once by ReadUnitNames.</param>
+function TryExtractSegmentUnitName(const ARegEx: TRegEx; const ALine: string;
+  out AUnitName: string): Boolean;
+var
+  LMatch: TMatch;
+begin
+  AUnitName := '';
+  LMatch := ARegEx.Match(ALine);
+  Result := LMatch.Success;
+  if Result then
+    AUnitName := Trim(LMatch.Groups[1].Value);
 end;
 
 class function TMapFileReader.ReadUnitNames(const AMapFilePath: string): TArray<string>;
@@ -116,30 +135,6 @@ begin
     LUnitNames.Free;
     LSeen.Free;
   end;
-end;
-
-class function TMapFileReader.TryExtractLineNumbersUnitName(const ARegEx: TRegEx;
-  const ALine: string; out AUnitName: string): Boolean;
-var
-  LMatch: TMatch;
-begin
-  AUnitName := '';
-  LMatch := ARegEx.Match(ALine);
-  Result := LMatch.Success;
-  if Result then
-    AUnitName := Trim(LMatch.Groups[1].Value);
-end;
-
-class function TMapFileReader.TryExtractSegmentUnitName(const ARegEx: TRegEx;
-  const ALine: string; out AUnitName: string): Boolean;
-var
-  LMatch: TMatch;
-begin
-  AUnitName := '';
-  LMatch := ARegEx.Match(ALine);
-  Result := LMatch.Success;
-  if Result then
-    AUnitName := Trim(LMatch.Groups[1].Value);
 end;
 
 end.
