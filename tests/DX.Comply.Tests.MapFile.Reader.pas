@@ -53,6 +53,29 @@ type
     procedure ReadUnitNames_SegmentMap_DeduplicatesAcrossSections;
 
     /// <summary>
+    /// Units come back in the order of their first appearance.
+    /// </summary>
+    [Test]
+    procedure ReadUnitNames_ManyUnits_KeepsFirstAppearanceOrder;
+
+    /// <summary>
+    /// Names that differ only in case count once, with the first spelling.
+    /// </summary>
+    [Test]
+    procedure ReadUnitNames_DifferentCase_KeepsFirstSpelling;
+
+    /// <summary>
+    /// 40,000 distinct units must not take quadratic time. The old list scan
+    /// needed about 90 seconds here. The test measures the CPU time of the
+    /// thread, not wall-clock time, so a busy build machine does not fail it.
+    /// The bound is generous, because the per-line regex still costs a few
+    /// seconds.
+    /// </summary>
+    [Test]
+    [Category('Performance')]
+    procedure ReadUnitNames_FortyThousandUnits_DedupesInLinearTime;
+
+    /// <summary>
     /// The "Line numbers for" header is matched case-insensitively.
     /// </summary>
     [Test]
@@ -68,9 +91,28 @@ type
 implementation
 
 uses
+  Winapi.Windows,
   System.Diagnostics,
   System.IOUtils,
   System.SysUtils;
+
+/// <summary>
+/// CPU time of the calling thread in milliseconds (user plus kernel). Unlike
+/// wall-clock time it does not grow when other processes load the machine.
+/// </summary>
+function ThreadCpuMilliseconds: Int64;
+var
+  LCreation: TFileTime;
+  LExit: TFileTime;
+  LKernel: TFileTime;
+  LUser: TFileTime;
+begin
+  if not GetThreadTimes(GetCurrentThread, LCreation, LExit, LKernel, LUser) then
+    RaiseLastOSError;
+  var LKernel100ns := Int64(LKernel.dwHighDateTime) shl 32 or LKernel.dwLowDateTime;
+  var LUser100ns := Int64(LUser.dwHighDateTime) shl 32 or LUser.dwLowDateTime;
+  Result := (LKernel100ns + LUser100ns) div 10000;
+end;
 
 procedure TMapFileReaderTests.ReadUnitNames_DetailedMap_ExtractsUniqueUnitNames;
 var
@@ -187,6 +229,95 @@ begin
   finally
     if TFile.Exists(LMapFilePath) then
       TFile.Delete(LMapFilePath);
+  end;
+end;
+
+procedure TMapFileReaderTests.ReadUnitNames_ManyUnits_KeepsFirstAppearanceOrder;
+begin
+  var LMapContent :=
+    '  Line numbers for Zeta.Unit(Zeta.Unit.pas) segment CODE' + sLineBreak +
+    ' 0001:00000000 00000010 C=CODE     S=.text    G=(none)   M=Alpha.Unit ACBP=A9' + sLineBreak +
+    '  Line numbers for Zeta.Unit(Zeta.Unit.pas) segment ICODE' + sLineBreak +
+    ' 0001:00000010 00000010 C=CODE     S=.text    G=(none)   M=Mid.Unit ACBP=A9' + sLineBreak +
+    '  Line numbers for Alpha.Unit(Alpha.Unit.pas) segment CODE';
+
+  var LMapFilePath := TPath.GetTempFileName;
+  try
+    TFile.WriteAllText(LMapFilePath, LMapContent, TEncoding.UTF8);
+    var LUnitNames := TMapFileReader.ReadUnitNames(LMapFilePath);
+
+    Assert.AreEqual(NativeInt(3), NativeInt(Length(LUnitNames)));
+    Assert.AreEqual('Zeta.Unit', LUnitNames[0]);
+    Assert.AreEqual('Alpha.Unit', LUnitNames[1]);
+    Assert.AreEqual('Mid.Unit', LUnitNames[2]);
+  finally
+    if TFile.Exists(LMapFilePath) then
+    begin
+      TFile.Delete(LMapFilePath);
+    end;
+  end;
+end;
+
+procedure TMapFileReaderTests.ReadUnitNames_DifferentCase_KeepsFirstSpelling;
+begin
+  var LMapContent :=
+    ' 0001:00000000 00000010 C=CODE     S=.text    G=(none)   M=Vcl.Forms ACBP=A9' + sLineBreak +
+    ' 0001:00000010 00000010 C=CODE     S=.text    G=(none)   M=VCL.FORMS ACBP=A9' + sLineBreak +
+    '  Line numbers for vcl.forms(Vcl.Forms.pas) segment CODE';
+
+  var LMapFilePath := TPath.GetTempFileName;
+  try
+    TFile.WriteAllText(LMapFilePath, LMapContent, TEncoding.UTF8);
+    var LUnitNames := TMapFileReader.ReadUnitNames(LMapFilePath);
+
+    Assert.AreEqual(NativeInt(1), NativeInt(Length(LUnitNames)),
+      'Unit names that differ only in case must be deduplicated');
+    Assert.AreEqual('Vcl.Forms', LUnitNames[0]);
+  finally
+    if TFile.Exists(LMapFilePath) then
+    begin
+      TFile.Delete(LMapFilePath);
+    end;
+  end;
+end;
+
+procedure TMapFileReaderTests.ReadUnitNames_FortyThousandUnits_DedupesInLinearTime;
+const
+  cUnitCount = 40000;
+  cMaxMilliseconds = 20000;
+begin
+  var LMapFilePath := TPath.GetTempFileName;
+  try
+    var LBuilder := TStringBuilder.Create;
+    try
+      for var i := 0 to cUnitCount - 1 do
+      begin
+        // One segment entry per unit keeps the line count, and with it the
+        // regex cost, low, so the time is mostly the dedupe.
+        LBuilder.AppendFormat(' 0001:00000000 00000010 C=CODE     S=.text    G=(none)   M=Unit%d ACBP=A9', [i]);
+        LBuilder.AppendLine;
+      end;
+      TFile.WriteAllText(LMapFilePath, LBuilder.ToString, TEncoding.UTF8);
+    finally
+      LBuilder.Free;
+    end;
+
+    var LCpuStart := ThreadCpuMilliseconds;
+    var LUnitNames := TMapFileReader.ReadUnitNames(LMapFilePath);
+    var LCpuMilliseconds := ThreadCpuMilliseconds - LCpuStart;
+
+    Assert.AreEqual(NativeInt(cUnitCount), NativeInt(Length(LUnitNames)),
+      'Every synthetic unit must be extracted once');
+    Assert.AreEqual('Unit0', LUnitNames[0]);
+    Assert.AreEqual('Unit' + IntToStr(cUnitCount - 1), LUnitNames[cUnitCount - 1]);
+    Assert.IsTrue(LCpuMilliseconds < cMaxMilliseconds,
+      Format('Reading %d units took %d ms CPU time, limit is %d ms',
+        [cUnitCount, LCpuMilliseconds, cMaxMilliseconds]));
+  finally
+    if TFile.Exists(LMapFilePath) then
+    begin
+      TFile.Delete(LMapFilePath);
+    end;
   end;
 end;
 
