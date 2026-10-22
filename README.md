@@ -123,7 +123,7 @@ If the MAP file is in a non-standard directory, use `--map-dir`:
 dxcomply --project=MyApp.dproj --map-dir=build\Win32\Release --output=bom.json --no-pause
 ```
 
-Paths in the `.dproj` can use `$(Name)` variables, for example `<DCC_ExeOutput>$(MyProject_bin)</DCC_ExeOutput>`. The CLI looks each one up in the process environment first, then in the user overrides from Tools > Options > Environment Variables of the detected Delphi version (`HKCU\Software\Embarcadero\BDS\<version>\Environment Variables`). A variable that is found in neither place stays in the path, and the CLI names it in a warning.
+Paths in the `.dproj` can use `$(Name)` variables, for example `<DCC_ExeOutput>$(MyProject_bin)</DCC_ExeOutput>`. The CLI looks each one up in the process environment first, then in the user overrides from Tools > Options > Environment Variables of the detected Delphi version (`HKCU\Software\Embarcadero\BDS\<version>\Environment Variables`). A variable that is found in neither place stays in the path, and the CLI names it in a warning. A search path entry with such a variable is left out.
 
 To also generate the HTML/Markdown companion report from the CLI (the report ships disabled by default), pass `--report`. `--report=html` writes HTML only. `--report=both` writes HTML and Markdown. `--report` is the same as `--report=both`.
 
