@@ -23,15 +23,6 @@ type
   /// Reads unit names from a detailed Delphi map file.
   /// </summary>
   TMapFileReader = class
-  private
-    /// <summary>
-    /// Tries to extract a unit name from a "Line numbers for" section header.
-    /// </summary>
-    class function TryExtractLineNumbersUnitName(const ALine: string; out AUnitName: string): Boolean; static;
-    /// <summary>
-    /// Tries to extract a unit name from a "Detailed map of segments" entry (M=UnitName).
-    /// </summary>
-    class function TryExtractSegmentUnitName(const ALine: string; out AUnitName: string): Boolean; static;
   public
     /// <summary>
     /// Reads unique unit names from the specified detailed map file.
@@ -48,6 +39,12 @@ uses
   System.IOUtils,
   System.RegularExpressions,
   System.SysUtils;
+
+const
+  /// <summary>"Line numbers for &lt;Unit&gt;(&lt;File&gt;) ..." section header.</summary>
+  cLineNumbersPattern = '^\s*Line numbers for\s+([A-Za-z0-9_\.]+)\s*\(';
+  /// <summary>"Detailed map of segments" entry (M=UnitName).</summary>
+  cSegmentPattern = '\bM=([A-Za-z0-9_\.]+)\b';
 
 /// <summary>
 /// Adds a unit name to AUnitNames only once, case-insensitively. ASeen holds
@@ -67,15 +64,42 @@ begin
   AUnitNames.Add(AUnitName);
 end;
 
+/// <summary>
+/// Tries to extract a unit name with ARegEx, whose first group captures it.
+/// </summary>
+/// <param name="ARegEx">cLineNumbersPattern or cSegmentPattern, compiled once by
+/// ReadUnitNames.</param>
+function TryExtractUnitName(const ARegEx: TRegEx; const ALine: string;
+  out AUnitName: string): Boolean;
+var
+  LMatch: TMatch;
+begin
+  AUnitName := '';
+  LMatch := ARegEx.Match(ALine);
+  Result := LMatch.Success;
+
+  if Result then
+  begin
+    AUnitName := Trim(LMatch.Groups[1].Value);
+  end;
+end;
+
 class function TMapFileReader.ReadUnitNames(const AMapFilePath: string): TArray<string>;
 var
   LLine: string;
+  LLineNumbersRegEx: TRegEx;
   LLines: TStringList;
+  LSegmentRegEx: TRegEx;
   LUnitName: string;
 begin
   Result := nil;
   if not TFile.Exists(AMapFilePath) then
     Exit;
+
+  // Compiled once per file. The class function TRegEx.Match compiles its
+  // pattern on every call, which made large map files take minutes.
+  LLineNumbersRegEx := TRegEx.Create(cLineNumbersPattern, [roIgnoreCase, roCompiled]);
+  LSegmentRegEx := TRegEx.Create(cSegmentPattern, [roCompiled]);
 
   var LSeen := TDictionary<string, Boolean>.Create(TIStringComparer.Ordinal);
   var LUnitNames := TList<string>.Create;
@@ -84,11 +108,8 @@ begin
     LLines.LoadFromFile(AMapFilePath);
     for LLine in LLines do
     begin
-      if TryExtractLineNumbersUnitName(LLine, LUnitName) then
-      begin
-        AddUniqueUnitName(LUnitName, LSeen, LUnitNames);
-      end
-      else if TryExtractSegmentUnitName(LLine, LUnitName) then
+      if TryExtractUnitName(LLineNumbersRegEx, LLine, LUnitName) or
+        TryExtractUnitName(LSegmentRegEx, LLine, LUnitName) then
       begin
         AddUniqueUnitName(LUnitName, LSeen, LUnitNames);
       end;
@@ -99,32 +120,6 @@ begin
     LUnitNames.Free;
     LSeen.Free;
   end;
-end;
-
-class function TMapFileReader.TryExtractLineNumbersUnitName(const ALine: string;
-  out AUnitName: string): Boolean;
-var
-  LMatch: TMatch;
-begin
-  AUnitName := '';
-  LMatch := TRegEx.Match(ALine,
-    '^\s*Line numbers for\s+([A-Za-z0-9_\.]+)\s*\(', [roIgnoreCase]);
-  Result := LMatch.Success;
-  if Result then
-    AUnitName := Trim(LMatch.Groups[1].Value);
-end;
-
-class function TMapFileReader.TryExtractSegmentUnitName(const ALine: string;
-  out AUnitName: string): Boolean;
-var
-  LMatch: TMatch;
-begin
-  AUnitName := '';
-  LMatch := TRegEx.Match(ALine,
-    '\bM=([A-Za-z0-9_\.]+)\b');
-  Result := LMatch.Success;
-  if Result then
-    AUnitName := Trim(LMatch.Groups[1].Value);
 end;
 
 end.

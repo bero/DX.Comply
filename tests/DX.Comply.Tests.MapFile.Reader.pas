@@ -68,12 +68,25 @@ type
     /// 40,000 distinct units must not take quadratic time. The old list scan
     /// needed about 90 seconds here. The test measures the CPU time of the
     /// thread, not wall-clock time, so a busy build machine does not fail it.
-    /// The bound is generous, because the per-line regex still costs a few
-    /// seconds.
     /// </summary>
     [Test]
     [Category('Performance')]
     procedure ReadUnitNames_FortyThousandUnits_DedupesInLinearTime;
+
+    /// <summary>
+    /// The "Line numbers for" header is matched case-insensitively.
+    /// </summary>
+    [Test]
+    procedure ReadUnitNames_LowerCaseHeader_ExtractsUnitName;
+
+    /// <summary>
+    /// A large map file must be read without compiling a regex per line. The
+    /// test measures the CPU time of the thread, so a busy build machine does
+    /// not fail it.
+    /// </summary>
+    [Test]
+    [Category('Performance')]
+    procedure ReadUnitNames_LargeMap_ReadsQuickly;
   end;
 
 implementation
@@ -300,6 +313,83 @@ begin
     Assert.IsTrue(LCpuMilliseconds < cMaxMilliseconds,
       Format('Reading %d units took %d ms CPU time, limit is %d ms',
         [cUnitCount, LCpuMilliseconds, cMaxMilliseconds]));
+  finally
+    if TFile.Exists(LMapFilePath) then
+    begin
+      TFile.Delete(LMapFilePath);
+    end;
+  end;
+end;
+
+procedure TMapFileReaderTests.ReadUnitNames_LowerCaseHeader_ExtractsUnitName;
+var
+  LMapFilePath: string;
+  LUnitNames: TArray<string>;
+begin
+  LMapFilePath := TPath.GetTempFileName;
+  try
+    TFile.WriteAllText(LMapFilePath,
+      '  line numbers for DX.Comply.Engine(DX.Comply.Engine.pas) segment CODE',
+      TEncoding.UTF8);
+    LUnitNames := TMapFileReader.ReadUnitNames(LMapFilePath);
+
+    Assert.AreEqual(NativeInt(1), NativeInt(Length(LUnitNames)),
+      'A lower-case "line numbers for" header must still be recognized');
+    Assert.AreEqual('DX.Comply.Engine', LUnitNames[0]);
+  finally
+    if TFile.Exists(LMapFilePath) then
+    begin
+      TFile.Delete(LMapFilePath);
+    end;
+  end;
+end;
+
+procedure TMapFileReaderTests.ReadUnitNames_LargeMap_ReadsQuickly;
+const
+  cLineCount = 500000;
+  cLinesPerUnit = 500;
+  cMaxMilliseconds = 6000;
+var
+  LBuilder: TStringBuilder;
+  LCpuMilliseconds: Int64;
+  LCpuStart: Int64;
+  LLine: Integer;
+  LMapFilePath: string;
+  LUnitNames: TArray<string>;
+begin
+  LMapFilePath := TPath.GetTempFileName;
+  try
+    LBuilder := TStringBuilder.Create;
+    try
+      for LLine := 0 to cLineCount - 1 do
+      begin
+        if LLine mod cLinesPerUnit = 0 then
+        begin
+          LBuilder.AppendFormat('  Line numbers for Unit%0:d(Unit%0:d.pas) segment .text',
+            [LLine div cLinesPerUnit]);
+        end
+        else
+        begin
+          LBuilder.Append('    12 0001:00001234    13 0001:00001240    14 0001:0000124C');
+        end;
+
+        LBuilder.AppendLine;
+      end;
+
+      TFile.WriteAllText(LMapFilePath, LBuilder.ToString, TEncoding.UTF8);
+    finally
+      LBuilder.Free;
+    end;
+
+    LCpuStart := ThreadCpuMilliseconds;
+    LUnitNames := TMapFileReader.ReadUnitNames(LMapFilePath);
+    LCpuMilliseconds := ThreadCpuMilliseconds - LCpuStart;
+
+    Assert.AreEqual(NativeInt(cLineCount div cLinesPerUnit), NativeInt(Length(LUnitNames)),
+      'Every synthetic unit must be extracted');
+    Assert.IsTrue(LCpuMilliseconds < cMaxMilliseconds,
+      Format('Reading %d lines took %d ms CPU time, limit is %d ms',
+        [cLineCount, LCpuMilliseconds, cMaxMilliseconds]));
   finally
     if TFile.Exists(LMapFilePath) then
     begin
