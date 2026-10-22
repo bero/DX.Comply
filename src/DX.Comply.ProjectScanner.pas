@@ -125,9 +125,19 @@ type
     function GetElementValue(const AXmlBlock, AName: string): string;
     /// <summary>
     /// Reads AName from property groups matching Base, platform, and config
-    /// (later groups override earlier ones).
+    /// (later groups override earlier ones). A $(AName) in a later value is
+    /// replaced with the value of the earlier groups, as MSBuild does.
     /// </summary>
     function GetPropertyValue(const AName: string; const ADefault: string = ''): string;
+    /// <summary>
+    /// Takes AValue, the value of AName in a later property group, over
+    /// AValueSoFar, the value of the earlier groups. As in MSBuild, $(AName) in
+    /// AValue stands for AValueSoFar, so x;$(DCC_UnitSearchPath) extends the
+    /// base group instead of replacing it. An empty AValue changes nothing;
+    /// otherwise AFound becomes True.
+    /// </summary>
+    procedure TakeValue(const AName, AValue: string; var AValueSoFar: string;
+      var AFound: Boolean);
     /// <summary>
     /// Extracts runtime packages from DCC_UsePackage when UsePackages is true.
     /// A readable PE output keeps only packages named in its import table.
@@ -189,6 +199,8 @@ type
     function BuildExpectedMapFilePath(const AProjectInfo: TProjectInfo): string;
     /// <summary>
     /// Adds semicolon-delimited values to a list, optionally normalizing them as paths.
+    /// Path entries are expanded first; one that still holds a $(Name) is skipped.
+    /// In a list of names, entries that start with $ are skipped.
     /// </summary>
     procedure AddDelimitedValues(const AValue: string; const AValues: TList<string>;
       const AProjectDir, AProjectName: string; ANormalizeAsPath: Boolean);
@@ -866,12 +878,23 @@ begin
     if LResolvedItem = '' then
       Continue;
 
-    if LResolvedItem[1] = '$' then
+    // In a list of names, an entry that starts with $ refers to another
+    // property and is not a name.
+    if not ANormalizeAsPath and (LResolvedItem[1] = '$') then
+    begin
       Continue;
+    end;
 
     if ANormalizeAsPath then
     begin
       LResolvedItem := NormalizePath(LResolvedItem, AProjectName);
+      // A path that still holds a $(Name) after expansion cannot exist on disk.
+      // ExpandVariableTokens has already reported the variable.
+      if Pos('$(', LResolvedItem) > 0 then
+      begin
+        Continue;
+      end;
+
       if (LResolvedItem <> '') and TPath.IsRelativePath(LResolvedItem) then
         LResolvedItem := TPath.Combine(AProjectDir, LResolvedItem);
 
@@ -1461,21 +1484,36 @@ begin
     LoWord(LFixedInfo.dwFileVersionLS)]);
 end;
 
+procedure TProjectScanner.TakeValue(const AName, AValue: string;
+  var AValueSoFar: string; var AFound: Boolean);
+begin
+  if AValue = '' then
+  begin
+    Exit;
+  end;
+
+  AValueSoFar := StringReplace(AValue, '$(' + AName + ')', AValueSoFar,
+    [rfReplaceAll, rfIgnoreCase]);
+  AFound := True;
+end;
+
 function TProjectScanner.GetPropertyValue(const AName, ADefault: string): string;
 var
-  LBlock, LValue: string;
+  LBlock: string;
   LBlocks: TArray<string>;
+  LFound: Boolean;
+  LValueSoFar: string;
   I: Integer;
 begin
   Result := ADefault;
+  LFound := False;
+  LValueSoFar := '';
 
   // 0. Unconditional PropertyGroup (no Condition attribute — Delphi 2007 default)
   LBlock := GetUnconditionalPropertyGroupContent;
   if LBlock <> '' then
   begin
-    LValue := GetElementValue(LBlock, AName);
-    if LValue <> '' then
-      Result := LValue;
+    TakeValue(AName, GetElementValue(LBlock, AName), LValueSoFar, LFound);
   end;
 
   // 1. Base PropertyGroup (Condition contains '$(Base)')
@@ -1486,9 +1524,7 @@ begin
     // Skip Base_ groups (Base_Win32 etc.) — they are handled in step 2
     if (Pos('Base_', LBlock) > 0) and (Pos('''$(Base)''!=''''', LBlock) = 0) then
       Continue;
-    LValue := GetElementValue(LBlock, AName);
-    if LValue <> '' then
-      Result := LValue;
+    TakeValue(AName, GetElementValue(LBlock, AName), LValueSoFar, LFound);
   end;
 
   // 2. Platform-specific (Condition contains '$(Base_Win32)' etc.)
@@ -1497,9 +1533,7 @@ begin
     LBlocks := GetPropertyGroupContents('$(Base_' + FCurrentPlatform + ')');
     for I := 0 to High(LBlocks) do
     begin
-      LValue := GetElementValue(LBlocks[I], AName);
-      if LValue <> '' then
-        Result := LValue;
+      TakeValue(AName, GetElementValue(LBlocks[I], AName), LValueSoFar, LFound);
     end;
   end;
 
@@ -1509,9 +1543,7 @@ begin
     LBlocks := GetPropertyGroupContents('$(' + FConfigKey + ')');
     for I := 0 to High(LBlocks) do
     begin
-      LValue := GetElementValue(LBlocks[I], AName);
-      if LValue <> '' then
-        Result := LValue;
+      TakeValue(AName, GetElementValue(LBlocks[I], AName), LValueSoFar, LFound);
     end;
   end;
 
@@ -1521,9 +1553,7 @@ begin
     LBlocks := GetPropertyGroupContents(FConfigKey + '_' + FCurrentPlatform);
     for I := 0 to High(LBlocks) do
     begin
-      LValue := GetElementValue(LBlocks[I], AName);
-      if LValue <> '' then
-        Result := LValue;
+      TakeValue(AName, GetElementValue(LBlocks[I], AName), LValueSoFar, LFound);
     end;
   end;
 
@@ -1536,19 +1566,20 @@ begin
       LBlock := GetPropertyGroupContent(FCurrentConfig + '|' + FCurrentPlatform);
       if LBlock <> '' then
       begin
-        LValue := GetElementValue(LBlock, AName);
-        if LValue <> '' then
-          Result := LValue;
+        TakeValue(AName, GetElementValue(LBlock, AName), LValueSoFar, LFound);
       end;
     end;
     // AnyCPU fallback — used by old .dproj files without platform-specific blocks
     LBlock := GetPropertyGroupContent(FCurrentConfig + '|AnyCPU');
     if LBlock <> '' then
     begin
-      LValue := GetElementValue(LBlock, AName);
-      if LValue <> '' then
-        Result := LValue;
+      TakeValue(AName, GetElementValue(LBlock, AName), LValueSoFar, LFound);
     end;
+  end;
+
+  if LFound then
+  begin
+    Result := LValueSoFar;
   end;
 end;
 
