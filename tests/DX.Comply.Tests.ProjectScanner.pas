@@ -202,6 +202,34 @@ type
     procedure Scan_UnknownVariable_WarningNamesIt;
 
     /// <summary>
+    /// A search path entry that starts with a variable, such as
+    /// $(MyRoot)\Source, is expanded instead of dropped.
+    /// </summary>
+    [Test]
+    procedure Scan_SearchPathStartingWithVariable_ExpandsIt;
+
+    /// <summary>
+    /// A search path entry whose variable stays unresolved is skipped,
+    /// wherever the variable is in the entry.
+    /// </summary>
+    [Test]
+    procedure Scan_SearchPathWithUnknownVariable_SkipsEntries;
+
+    /// <summary>
+    /// A platform group that appends to the search path with
+    /// $(DCC_UnitSearchPath) keeps the entries of the base group, as MSBuild does.
+    /// </summary>
+    [Test]
+    procedure Scan_PlatformSearchPath_KeepsInheritedEntries;
+
+    /// <summary>
+    /// A platform group that appends to the unit scope names with
+    /// $(DCC_Namespace) keeps the names of the base group.
+    /// </summary>
+    [Test]
+    procedure Scan_PlatformNamespace_KeepsInheritedNames;
+
+    /// <summary>
     /// The engine package output is the BPL name plus DllSuffix, in the
     /// active config/platform output directory.
     /// </summary>
@@ -883,10 +911,11 @@ begin
 end;
 
 /// <summary>
-/// Scans a temporary .dproj whose DCC_ExeOutput is AExeOutput, with
+/// Scans a temporary .dproj with ADprojContent for Win32 Release, with
 /// AOverrides (name, value pairs) as the IDE override source. The caller frees the result.
 /// </summary>
-function ScanWithOverrides(const AExeOutput: string; const AOverrides: array of string): TProjectInfo;
+function ScanDprojWithOverrides(const ADprojContent: string;
+  const AOverrides: array of string): TProjectInfo;
 var
   LOverrides: TDictionary<string, string>;
   LScanner: TProjectScanner;
@@ -907,7 +936,7 @@ begin
     ForceDirectories(LTempDir);
     LTempDproj := TPath.Combine(LTempDir, 'OverrideApp.dproj');
     try
-      TFile.WriteAllText(LTempDproj, OverrideDproj(AExeOutput), TEncoding.UTF8);
+      TFile.WriteAllText(LTempDproj, ADprojContent, TEncoding.UTF8);
       LScanner := TProjectScanner.Create;
       LScannerIntf := LScanner;
       LScanner.SetIdeOverrideLookup(
@@ -929,6 +958,63 @@ begin
   finally
     LOverrides.Free;
   end;
+end;
+
+/// <summary>
+/// Scans a temporary .dproj whose DCC_ExeOutput is AExeOutput, with
+/// AOverrides (name, value pairs) as the IDE override source. The caller frees the result.
+/// </summary>
+function ScanWithOverrides(const AExeOutput: string; const AOverrides: array of string): TProjectInfo;
+begin
+  Result := ScanDprojWithOverrides(OverrideDproj(AExeOutput), AOverrides);
+end;
+
+// ---- Search path variables and property inheritance -------------------------
+
+/// <summary>
+/// A .dproj whose base group holds ABaseElements and whose Win32 group holds
+/// AWin32Elements. Both are raw XML elements and may be empty.
+/// </summary>
+function InheritanceDproj(const ABaseElements, AWin32Elements: string): string;
+begin
+  Result :=
+    '<?xml version="1.0" encoding="utf-8"?>' + sLineBreak +
+    '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' + sLineBreak +
+    '  <PropertyGroup>' + sLineBreak +
+    '    <MainSource>OverrideApp.dpr</MainSource>' + sLineBreak +
+    '  </PropertyGroup>' + sLineBreak +
+    '  <PropertyGroup Condition="''$(Base)''!=''''">' + sLineBreak +
+    '    ' + ABaseElements + sLineBreak +
+    '  </PropertyGroup>' + sLineBreak +
+    '  <PropertyGroup Condition="''$(Base_Win32)''!=''''">' + sLineBreak +
+    '    ' + AWin32Elements + sLineBreak +
+    '  </PropertyGroup>' + sLineBreak +
+    '</Project>';
+end;
+
+/// <summary>
+/// True when AList holds AValue, ignoring case.
+/// </summary>
+function HasEntry(const AList: TList<string>; const AValue: string): Boolean;
+var
+  LEntry: string;
+begin
+  Result := False;
+  for LEntry in AList do
+  begin
+    if SameText(LEntry, AValue) then
+    begin
+      Exit(True);
+    end;
+  end;
+end;
+
+/// <summary>
+/// AList as one semicolon-separated string, for assertion messages.
+/// </summary>
+function JoinEntries(const AList: TList<string>): string;
+begin
+  Result := string.Join(';', AList.ToArray);
 end;
 
 procedure TProjectScannerTests.Scan_IdeOverrideInOutputDir_ExpandsOverride;
@@ -1008,6 +1094,90 @@ begin
       end;
     end;
     Assert.AreEqual(1, LCount, 'Exactly one warning must name the missing variable');
+  finally
+    LProjectInfo.Free;
+  end;
+end;
+
+procedure TProjectScannerTests.Scan_SearchPathStartingWithVariable_ExpandsIt;
+var
+  LProjectInfo: TProjectInfo;
+begin
+  LProjectInfo := ScanDprojWithOverrides(
+    InheritanceDproj('<DCC_UnitSearchPath>$(DxcSearchRoot)\src</DCC_UnitSearchPath>', ''),
+    ['DxcSearchRoot', 'C:\DxcSearchRoot']);
+  try
+    Assert.IsTrue(HasEntry(LProjectInfo.ProjectSearchPaths, 'C:\DxcSearchRoot\src'),
+      'The search path must hold the expanded entry but was: ' +
+      JoinEntries(LProjectInfo.ProjectSearchPaths));
+  finally
+    LProjectInfo.Free;
+  end;
+end;
+
+procedure TProjectScannerTests.Scan_SearchPathWithUnknownVariable_SkipsEntries;
+var
+  LEntry: string;
+  LProjectInfo: TProjectInfo;
+begin
+  LProjectInfo := ScanDprojWithOverrides(InheritanceDproj(
+    '<DCC_UnitSearchPath>$(DxcNoSuchVar)\src;C:\DxcBase\$(DxcNoSuchVar)\lib;' +
+    'C:\DxcKept</DCC_UnitSearchPath>', ''), []);
+  try
+    Assert.IsTrue(HasEntry(LProjectInfo.ProjectSearchPaths, 'C:\DxcKept'),
+      'The resolvable entry must be kept but the search path was: ' +
+      JoinEntries(LProjectInfo.ProjectSearchPaths));
+
+    for LEntry in LProjectInfo.ProjectSearchPaths do
+    begin
+      Assert.IsTrue(Pos('$(', LEntry) = 0,
+        'No search path entry may keep an unresolved variable: ' + LEntry);
+    end;
+  finally
+    LProjectInfo.Free;
+  end;
+end;
+
+procedure TProjectScannerTests.Scan_PlatformSearchPath_KeepsInheritedEntries;
+var
+  LEntry: string;
+  LProjectInfo: TProjectInfo;
+begin
+  LProjectInfo := ScanDprojWithOverrides(InheritanceDproj(
+    '<DCC_UnitSearchPath>C:\DxcBaseDir;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>',
+    '<DCC_UnitSearchPath>C:\DxcWin32Dir;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>'), []);
+  try
+    Assert.IsTrue(HasEntry(LProjectInfo.ProjectSearchPaths, 'C:\DxcWin32Dir'),
+      'The Win32 entry must be in the search path but it was: ' +
+      JoinEntries(LProjectInfo.ProjectSearchPaths));
+    Assert.IsTrue(HasEntry(LProjectInfo.ProjectSearchPaths, 'C:\DxcBaseDir'),
+      'The inherited base entry must be in the search path but it was: ' +
+      JoinEntries(LProjectInfo.ProjectSearchPaths));
+
+    for LEntry in LProjectInfo.ProjectSearchPaths do
+    begin
+      Assert.IsTrue(Pos('$(', LEntry) = 0,
+        'No search path entry may keep a variable: ' + LEntry);
+    end;
+  finally
+    LProjectInfo.Free;
+  end;
+end;
+
+procedure TProjectScannerTests.Scan_PlatformNamespace_KeepsInheritedNames;
+var
+  LProjectInfo: TProjectInfo;
+begin
+  LProjectInfo := ScanDprojWithOverrides(InheritanceDproj(
+    '<DCC_Namespace>Xml;Data;$(DCC_Namespace)</DCC_Namespace>',
+    '<DCC_Namespace>Winapi;Vcl;$(DCC_Namespace)</DCC_Namespace>'), []);
+  try
+    Assert.IsTrue(HasEntry(LProjectInfo.UnitScopeNames, 'Vcl'),
+      'The Win32 scope names must be kept but were: ' +
+      JoinEntries(LProjectInfo.UnitScopeNames));
+    Assert.IsTrue(HasEntry(LProjectInfo.UnitScopeNames, 'Xml'),
+      'The inherited base scope names must be kept but were: ' +
+      JoinEntries(LProjectInfo.UnitScopeNames));
   finally
     LProjectInfo.Free;
   end;
